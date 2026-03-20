@@ -1,0 +1,1 @@
+web: gunicorn webhook_catcher.app:app --bind 0.0.0.0:$PORT
