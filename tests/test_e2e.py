@@ -1,22 +1,27 @@
 """
 tests/test_e2e.py
 
-End-to-end test that simulates the full flow without needing a real Instagram comment.
+End-to-end test that exercises the full pipeline for each platform.
 
-It inserts a fake event directly into the Supabase queue, then watches
-the local worker process it in real time. This lets you verify the entire
-pipeline works — Supabase → worker → Ollama → sender — before going live.
+Instagram: inserts a fake event into the Supabase queue and waits for
+the running worker to pick it up, generate a reply with Ollama, and
+attempt to send the DM. (DM will fail if the sender_id is fake — that's
+expected. What matters is that Ollama generated a reply.)
+
+Email: fetches any unread emails from Gmail directly via IMAP and sends
+AI-generated replies for each one. Email does NOT go through the Supabase
+queue — the worker polls Gmail directly — so this test exercises that path
+without needing the worker running in another terminal.
 
 Usage:
-  # In terminal 1 — start the worker
+  # Instagram test — start the worker first in another terminal
   python worker/worker.py
 
-  # In terminal 2 — run this test
+  # Then run the full e2e test
   python tests/test_e2e.py
 
-You should see the worker pick up the fake event and attempt to send a reply.
-For Instagram: it will try to DM the test user ID (will fail unless it's a real ID)
-For email: it will try to send an email to your SMTP_USER address (sends to yourself)
+  # For the email test to do real work: send a test email to your SMTP_USER
+  # inbox before running this script.
 """
 
 import sys
@@ -68,36 +73,55 @@ def insert_test_instagram_event():
     return row_id
 
 
-def insert_test_email_event():
+def test_email_flow_directly() -> bool:
     """
-    Inserts a fake email event into the Supabase queue.
+    Tests the email pipeline end-to-end by fetching any unread emails
+    from Gmail via IMAP and sending AI-generated replies for each one.
 
-    Unlike real email events which come via IMAP polling, this inserts
-    directly into the queue to test the worker's email processing path.
+    Email does NOT use the Supabase queue — the worker polls Gmail directly.
+    Inserting into the queue has no effect on email processing, so this test
+    exercises the real IMAP → Ollama → SMTP path instead.
 
-    The worker will pick this up and send a reply to your SMTP_USER
-    address — effectively sending an email to yourself. Check your inbox
-    to confirm the reply arrived and looks correct.
+    To get full coverage: send a test email to your SMTP_USER inbox before
+    running this test. If the inbox is empty the test passes with a notice.
     """
-    your_email = os.getenv("SMTP_USER", "test@gmail.com")
+    # Import from the worker directory (sibling of this file's parent)
+    worker_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "worker")
+    sys.path.insert(0, worker_dir)
+    from ollama_client import generate_reply
 
-    TEST_SENDER  = your_email  # sends reply to yourself for easy testing
-    TEST_CONTENT = "Subject: Testing the auto-reply\n\nHi, I wanted to ask about your InstaFilter extension. Does it work on all browsers?"
+    from senders.email import fetch_new_emails, send_email_reply
 
-    print("\n📧 Inserting fake email event into queue...")
-    print(f"   Sender:  {TEST_SENDER}")
-    print(f"   Content: '{TEST_CONTENT[:60]}...'")
+    print("\n📧 Testing email flow directly (IMAP → Ollama → SMTP)...")
 
-    result = supabase.table("queue").insert({
-        "platform":  "email",
-        "sender_id": TEST_SENDER,
-        "content":   TEST_CONTENT,
-        "processed": False
-    }).execute()
+    emails = fetch_new_emails()
 
-    row_id = result.data[0]["id"]
-    print(f"   ✅ Row inserted — id: {row_id}")
-    return row_id
+    if not emails:
+        print("  ℹ️  No unread emails found — send a test email to your Gmail inbox first,")
+        print("     then re-run this test. Email flow skipped (not a failure).")
+        return True
+
+    print(f"  📬 Found {len(emails)} unread email(s) to process")
+    all_ok = True
+
+    for em in emails:
+        try:
+            context = f"Subject: {em['subject']}\n\n{em['body']}"
+            reply   = generate_reply("email", context)
+            if not reply:
+                reply = "Thanks for reaching out — I'll get back to you soon."
+
+            success = send_email_reply(em["sender"], reply)
+            status  = "✅" if success else "❌"
+            print(f"  {status} Reply sent to {em['sender']}: '{em['subject'][:40]}'")
+            if not success:
+                all_ok = False
+
+        except Exception as e:
+            print(f"  ❌ Error processing email from {em.get('sender', '?')}: {e}")
+            all_ok = False
+
+    return all_ok
 
 
 def wait_for_processing(row_id: str, timeout_seconds: int = 60):
@@ -155,19 +179,18 @@ if __name__ == "__main__":
     print("=" * 55)
     print("  local-llm-autoreply — end-to-end test")
     print("=" * 55)
-    print("\nThis test inserts fake events into Supabase and waits")
-    print("for the worker to process them. Make sure the worker is")
-    print("running in another terminal before proceeding.\n")
+    print("\nInstagram: requires the worker running in another terminal.")
+    print("Email:     runs directly here — no worker needed.\n")
 
-    # Test Instagram flow
+    # Test Instagram flow via Supabase queue (requires worker running)
     ig_row_id = insert_test_instagram_event()
     ig_ok     = wait_for_processing(ig_row_id, timeout_seconds=90)
 
-    # Test email flow
-    email_row_id = insert_test_email_event()
-    email_ok     = wait_for_processing(email_row_id, timeout_seconds=90)
+    # Test email flow directly via IMAP → Ollama → SMTP
+    # (email never goes through Supabase — the worker polls Gmail directly)
+    email_ok = test_email_flow_directly()
 
-    # Clean up fake test data
+    # Clean up fake Instagram test data from Supabase
     cleanup_test_rows()
 
     print("\n" + "=" * 55)

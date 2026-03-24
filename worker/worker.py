@@ -19,7 +19,15 @@ Start this with: python worker/worker.py
 Keep it running in a terminal while you want auto-replies active.
 """
 
+import sys
 import os
+from pathlib import Path
+
+# Add the project root to sys.path so the 'senders' package can be found.
+# Without this, running 'python worker/worker.py' from the project root sets
+# sys.path[0] to the worker/ directory, making 'from senders.x import ...' fail.
+sys.path.insert(0, str(Path(__file__).parent.parent))
+
 import time
 import logging
 from dotenv import load_dotenv
