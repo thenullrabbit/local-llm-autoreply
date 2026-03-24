@@ -6,12 +6,21 @@ It is the ONLY piece of this project that lives in the cloud.
 
 Its entire job is simple:
   - Wait for Instagram to tell us someone left a comment
-  - Verify the request genuinely came from Meta (signature check)
+  - Verify the request genuinely came from Meta (HMAC-SHA256 signature check)
   - Save that comment to our Supabase queue
   - Reply "ok" immediately so Instagram doesn't retry
 
 It does NOT reply to anyone. It does NOT use AI.
 It is just a tiny post box that catches messages and stores them.
+
+Security measures applied:
+  - Rate limiting (flask-limiter): 500 req/min on webhook POST, 20/min on
+    verification GET, 60/min on /ping and /health
+  - 512 KB request body cap (MAX_CONTENT_LENGTH)
+  - HMAC-SHA256 signature verification on every POST using META_APP_SECRET
+  - sender_id validated as numeric string before touching the database
+  - Comment text truncated to 2200 chars and null bytes stripped
+  - Content-Type: application/json enforced on webhook POST
 """
 
 import os

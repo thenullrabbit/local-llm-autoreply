@@ -10,6 +10,15 @@ This file sends the incoming comment or email text to Ollama,
 along with a set of instructions (called a 'system prompt') that tells
 the AI who it is and how to respond. Ollama returns a generated reply.
 
+Security measures applied:
+  - Platform is validated against an allowlist {"instagram", "email"} before
+    use. This prevents path traversal — a crafted platform value like
+    "../../etc/passwd" would reach _load_prompt() and try to read that file.
+    The allowlist stops it at two independent checkpoints.
+  - Content is truncated to 4000 characters before being sent to Ollama.
+    This prevents very long emails or comment threads from overloading the
+    model's context window or producing unexpectedly slow / huge responses.
+
 Before using this, make sure Ollama is running:
   ollama serve
   ollama pull llama3

@@ -23,6 +23,7 @@ import logging
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.header import decode_header
+from email.utils import parseaddr
 log = logging.getLogger(__name__)
 
 IMAP_HOST     = os.getenv("IMAP_HOST", "imap.gmail.com")
@@ -56,23 +57,24 @@ def fetch_new_emails() -> list[dict]:
     Works like opening your email client and checking for new messages —
     except it does it automatically in the background every 2 minutes.
 
-    After reading each email, it marks it as 'read' in Gmail so it won't
-    be fetched again on the next poll. This is the email equivalent of
-    marking a Supabase row as processed.
+    Emails are NOT marked as read here. Call mark_email_read(uid) after
+    send_email_reply() succeeds. This means if a reply fails for any reason,
+    the email stays unread and will be retried on the next poll — nothing
+    is silently swallowed.
 
     Body length is capped at 8000 characters before being passed to Ollama.
-    This prevents very long emails (newsletters, long threads) from
-    overwhelming the AI model or causing slow responses.
+    This prevents very long emails (newsletters, threads) from overwhelming
+    the AI model or causing slow responses.
 
     Prerequisites:
       - IMAP must be enabled in Gmail Settings → Forwarding and POP/IMAP
       - SMTP_PASSWORD must be a Gmail App Password (not your real password)
 
     Returns a list of emails, each containing:
-      - uid:     Gmail's internal ID for the email
+      - uid:     Gmail's internal ID for the email (pass to mark_email_read)
       - subject: the email subject line
-      - sender:  the From address (who sent it)
-      - body:    the plain text content of the email (truncated to 8000 chars)
+      - sender:  the From address, including display name if present
+      - body:    the plain text content (truncated to 8000 chars)
     """
     if not SMTP_USER or not SMTP_PASSWORD:
         log.error("❌ SMTP_USER or SMTP_PASSWORD not set — export them in your shell (see .env.example for the list of required variables)")
@@ -112,8 +114,9 @@ def fetch_new_emails() -> list[dict]:
                         "body":    body
                     })
 
-                    # Mark as read — prevents processing the same email twice
-                    imap.store(uid, "+FLAGS", "\\Seen")
+                    # Note: NOT marked as read here.
+                    # mark_email_read() is called only after a successful reply
+                    # so a failed send doesn't silently swallow the email.
 
                 except Exception as e:
                     log.error(f"❌ Failed to read email {uid}: {e}")
@@ -126,6 +129,30 @@ def fetch_new_emails() -> list[dict]:
         log.error(f"❌ Failed to fetch emails: {e}")
 
     return emails
+
+
+def mark_email_read(uid: str):
+    """
+    Marks a single email as read in Gmail.
+
+    Always call this AFTER send_email_reply() returns True — never before.
+    This is what prevents the same email from being processed twice.
+
+    The deliberate separation from fetch_new_emails() means a failed reply
+    never silently consumes an email: if send_email_reply() returns False,
+    you don't call this, the email stays UNSEEN, and it will be fetched and
+    retried on the next IMAP poll (every 2 minutes).
+
+    A warning is logged if the mark fails — it won't crash the worker,
+    but the email may be processed again on the next cycle.
+    """
+    try:
+        with imaplib.IMAP4_SSL(IMAP_HOST, IMAP_PORT) as imap:
+            imap.login(SMTP_USER, SMTP_PASSWORD)
+            imap.select("INBOX")
+            imap.store(uid.encode(), "+FLAGS", "\\Seen")
+    except Exception as e:
+        log.warning(f"⚠️  Could not mark email {uid} as read: {e}")
 
 
 # ── SMTP email sending ────────────────────────────────────────────────────────
@@ -155,11 +182,14 @@ def send_email_reply(recipient_email: str, message: str) -> bool:
         log.error("❌ SMTP_USER or SMTP_PASSWORD not set — export them in your shell (see .env.example for the list of required variables)")
         return False
 
-    # Validate the recipient address — reject malformed or injection-risk addresses.
-    recipient_email = recipient_email.strip()
-    if not _EMAIL_RE.match(recipient_email):
+    # Email From headers often include a display name:
+    # "UserXXX <userxxx@gmail.com>"  →  extract just the address part
+    # parseaddr() handles both bare addresses and display-name formats safely.
+    _, addr = parseaddr(recipient_email.strip())
+    if not addr or not _EMAIL_RE.match(addr):
         log.error(f"❌ Invalid recipient email address: {recipient_email!r} — skipping")
         return False
+    recipient_email = addr
 
     # Strip newlines from YOUR_NAME to prevent email header injection.
     # A name containing \r\n could split the From header and inject extra fields.

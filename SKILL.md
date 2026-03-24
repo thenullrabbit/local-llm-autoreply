@@ -51,10 +51,9 @@ Walk the user through these phases in order. Check in after each phase — don't
 git clone https://github.com/thenullrabbit/local-llm-autoreply
 cd local-llm-autoreply
 pip install -r requirements.txt
-cp .env.example .env
 ```
 
-Tell the user: "Open `.env` in a text editor — we'll fill it in together as we go."
+Tell the user: "All credentials go in `~/.zshrc` as shell exports — we'll add them together as we go. The `.env.example` file is a reference for what's needed but is never read by the code."
 
 ---
 
@@ -78,10 +77,10 @@ curl http://localhost:11434/api/tags
 ```
 Should return JSON with `llama3` in the model list. If it doesn't, don't move on — fix this first.
 
-`.env` values to set:
-```
-OLLAMA_URL=http://localhost:11434
-OLLAMA_MODEL=llama3
+Add to `~/.zshrc` (these are the defaults — only needed if you change them):
+```bash
+export OLLAMA_URL="http://localhost:11434"
+export OLLAMA_MODEL="llama3"
 ```
 
 ---
@@ -91,10 +90,10 @@ OLLAMA_MODEL=llama3
 1. supabase.com → New project → choose any region → copy **Project URL** and **service_role key** (Settings → API)
 2. SQL Editor → New Query → paste the contents of `supabase_schema.sql` → Run
 
-`.env` values to set:
-```
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_SERVICE_KEY=your-service-role-key
+Add to `~/.zshrc`:
+```bash
+export SUPABASE_URL="https://your-project.supabase.co"
+export SUPABASE_SERVICE_KEY="your-service-role-key"
 ```
 
 Set the same two values on Railway (Phase 4) — both services need them.
@@ -107,21 +106,29 @@ The webhook catcher must live in the cloud (always online) so Meta can reach it.
 
 ```bash
 npm install -g @railway/cli
-railway login
-railway init        # from inside the local-llm-autoreply folder
-railway up
+railway login --browserless   # prints a URL + pairing code — open URL in any browser
+railway init                  # from inside the local-llm-autoreply folder
+railway service local-llm-autoreply
 ```
 
-Copy the public URL Railway gives you (looks like `https://xyz.railway.app`).
-
-Set environment variables on Railway:
+Set environment variables BEFORE deploying — the app crashes on startup without them:
 ```bash
 railway variables set \
   SUPABASE_URL=https://your-project.supabase.co \
   SUPABASE_SERVICE_KEY=your-service-role-key \
   VERIFY_TOKEN=pick-any-random-string \
-  META_APP_SECRET=your-meta-app-secret \
-  PORT=5000
+  META_APP_SECRET=your-meta-app-secret
+```
+
+Then deploy:
+```bash
+railway up
+```
+
+Copy the public URL Railway gives you:
+```bash
+railway domain
+# → 🚀 https://local-llm-autoreply-production.up.railway.app
 ```
 
 Verify it's live:
@@ -164,38 +171,43 @@ Quick summary of what each requires:
 - Gmail IMAP enabled (Settings → Forwarding and POP/IMAP)
 - Gmail App Password from myaccount.google.com/apppasswords
 
-`.env` values to set after completing platform setup:
+Add to `~/.zshrc` after completing platform setup:
 
 Instagram:
-```
-INSTAGRAM_ACCESS_TOKEN=your-long-lived-token
-INSTAGRAM_USER_ID=your-numeric-instagram-id
-META_APP_SECRET=your-meta-app-secret
-VERIFY_TOKEN=same-string-as-railway
+```bash
+export INSTAGRAM_ACCESS_TOKEN="your-long-lived-token"
+export INSTAGRAM_USER_ID="your-numeric-instagram-id"
+export META_APP_SECRET="your-meta-app-secret"
+export VERIFY_TOKEN="same-string-as-railway"
 ```
 
 Email:
+```bash
+export SMTP_USER="your@gmail.com"
+export SMTP_PASSWORD="xxxx xxxx xxxx xxxx"   # 16-char App Password — must be quoted
+export YOUR_NAME="Your Name"
+# Only needed if NOT using Gmail defaults:
+# export IMAP_HOST="imap.gmail.com"
+# export IMAP_PORT="993"
+# export SMTP_HOST="smtp.gmail.com"
+# export SMTP_PORT="587"
 ```
-IMAP_HOST=imap.gmail.com
-IMAP_PORT=993
-SMTP_HOST=smtp.gmail.com
-SMTP_PORT=587
-SMTP_USER=your@gmail.com
-SMTP_PASSWORD=your-16-char-app-password
-YOUR_NAME=your-name
-```
+
+Then apply: `source ~/.zshrc`
 
 ---
 
 ### Phase 7 — Set fallback replies and poll intervals
 
-These go in the local `.env`:
+Add to `~/.zshrc`:
+```bash
+export FALLBACK_INSTAGRAM="Hey! Thanks for your comment 👋 I'll get back to you soon."
+export FALLBACK_EMAIL="Thanks for reaching out! I'll get back to you shortly."
+export POLL_INTERVAL_SECONDS="30"
+export EMAIL_POLL_INTERVAL_SECONDS="120"
 ```
-FALLBACK_INSTAGRAM=Hey! Thanks for your comment 👋 I'll get back to you soon.
-FALLBACK_EMAIL=Thanks for reaching out! I'll get back to you shortly.
-POLL_INTERVAL_SECONDS=30
-EMAIL_POLL_INTERVAL_SECONDS=120
-```
+
+Then apply: `source ~/.zshrc`
 
 Fallbacks are sent automatically if Ollama is offline or returns nothing — the person always gets a reply.
 
@@ -204,6 +216,7 @@ Fallbacks are sent automatically if Ollama is offline or returns nothing — the
 ### Phase 8 — Run pre-flight checks
 
 ```bash
+source ~/.zshrc
 python tests/test_all.py
 ```
 
@@ -239,12 +252,18 @@ Use this when the user reports errors, no replies being sent, or the worker cras
 |---------|-------|-----|
 | `Cannot connect to Ollama` | Ollama not running | `ollama serve` |
 | `Model not found` | Model not pulled | `ollama pull llama3` |
+| All pre-flight tests failing | Env vars not loaded | Run `source ~/.zshrc` before `python tests/test_all.py` |
 | No Instagram replies | Webhook not registered | Re-register in Meta Developer dashboard |
+| No Instagram replies | App in Development mode | Switch Meta app to Live mode in App Dashboard |
 | Meta error 10 | Missing permission | Enable `instagram_manage_messages` in Meta app |
 | Meta error 100 | Commenter > 24h ago | Nothing — Meta's rule, can't reply after 24h |
 | Meta error 190 | Token expired | Generate new long-lived token (every 60 days) |
 | `IMAP login error` | Wrong credentials | Use App Password, not real Gmail password |
 | `IMAP not enabled` | IMAP disabled in Gmail | Gmail Settings → Forwarding and POP/IMAP → Enable |
+| Email marked read but no reply sent | Bug — old code | Update to latest code; mark-as-read now happens only after successful send |
+| `Invalid recipient email address` | Gmail `From` header has display name format | Update to latest code; `parseaddr()` now handles `"Name <email>"` format |
+| `TypeError: unsupported operand type(s) for \|` | Python 3.9 doesn't support `str \| None` syntax | Update to latest code; `from __future__ import annotations` is now included |
+| `SMTP_PASSWORD` only stores first word | Unquoted value with spaces in `~/.zshrc` | Quote it: `export SMTP_PASSWORD="xxxx xxxx xxxx xxxx"` |
 | `Queue table not found` | Schema not applied | Run `supabase_schema.sql` in Supabase SQL editor |
 | Railway 502 on webhook | Railway cold start | Check UptimeRobot is pinging /ping every 5 min |
 | `SMTP auth failed` | App Password wrong | Regenerate at myaccount.google.com/apppasswords |
@@ -273,7 +292,7 @@ Tips for effective prompts:
 1. Add a webhook route or poller in `webhook_catcher/app.py` or `worker/worker.py`
 2. Add a sender in `senders/your_platform.py`
 3. Add a prompt in `prompts/your_platform.txt`
-4. Add fallback to `.env`: `FALLBACK_YOURPLATFORM=...`
+4. Add fallback to `~/.zshrc`: `export FALLBACK_YOURPLATFORM="your default reply"`
 5. Register sender in `worker/worker.py` SENDERS dict
 6. Document in `platforms/your_platform.md`
 
@@ -374,6 +393,31 @@ journalctl -u llm-worker -f
 - Email uses IMAP polling — no Google Cloud or Pub/Sub required
 - Railway webhook catcher is stateless (30 lines) — only queues events
 - Fallback replies ensure something is always sent if Ollama is down
+
+---
+
+## Testing this skill
+
+Installing the skill is safe — it only adds a markdown file to Claude Code's context. It does not touch your code, `.zshrc`, env vars, Ollama, Supabase, or anything running locally.
+
+```bash
+npx skills add thenullrabbit/local-llm-autoreply
+```
+
+Then open a **new** Claude Code session and ask:
+> "I want to auto-reply to my Instagram comments for free"
+
+The agent should trigger Phase 1 and walk through the setup. Stop before actually running any commands — just verify the instructions are correct:
+
+- Phase 1: no `cp .env.example .env` — only `~/.zshrc` exports
+- Phase 4: `railway login --browserless`, no `PORT=5000` in variables
+- Phase 8: `source ~/.zshrc` before `python tests/test_all.py`
+- Troubleshooting table: includes entries for env vars not loaded, Python 3.9 issue, email mark-as-read bug
+
+To test a local (unpublished) version:
+```bash
+npx skills add ./   # from the project root
+```
 
 ---
 

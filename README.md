@@ -346,6 +346,8 @@ python tests/test_all.py
 python tests/test_e2e.py
 ```
 
+![End-to-end test all passing](assets/preflight-e2e-all-green.png)
+
 **What each check tests:**
 - **Ollama** — model is downloaded and responding
 - **Supabase** — connection works and the `queue` table exists

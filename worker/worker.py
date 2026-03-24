@@ -33,7 +33,7 @@ import logging
 from supabase import create_client
 from ollama_client import generate_reply, check_ollama_health
 from senders.instagram import send_instagram_dm
-from senders.email import send_email_reply, fetch_new_emails
+from senders.email import send_email_reply, fetch_new_emails, mark_email_read
 
 logging.basicConfig(
     level=logging.INFO,
@@ -174,8 +174,13 @@ def process_new_emails():
     directly from Gmail via IMAP — no cloud server involved.
     The email content never touches Railway or any third party.
 
-    Each email's subject and body are sent to Ollama to generate
-    a contextual reply, which is then sent back via SMTP.
+    Each email's subject and body are sent to Ollama to generate a
+    contextual reply, which is then sent back via SMTP.
+
+    Mark-as-read order:
+      fetch (UNSEEN) → generate reply → send reply → mark as read
+    Emails are marked read only after a successful send. If the reply
+    fails, the email stays unread and is retried on the next cycle.
     """
     emails = fetch_new_emails()
 
@@ -199,9 +204,10 @@ def process_new_emails():
             success = send_email_reply(sender, reply)
 
             if success:
+                mark_email_read(em["uid"])
                 log.info(f"✅ Email reply sent to {sender}")
             else:
-                log.error(f"❌ Failed to send email reply to {sender}")
+                log.error(f"❌ Failed to send email reply to {sender} — email left unread for retry")
 
         except Exception as e:
             log.error(f"❌ Error processing email: {e}")
