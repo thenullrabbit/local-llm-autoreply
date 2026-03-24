@@ -30,13 +30,10 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 import time
 import logging
-from dotenv import load_dotenv
 from supabase import create_client
 from ollama_client import generate_reply, check_ollama_health
 from senders.instagram import send_instagram_dm
 from senders.email import send_email_reply, fetch_new_emails
-
-load_dotenv()
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,7 +45,7 @@ log = logging.getLogger(__name__)
 POLL_INTERVAL       = int(os.getenv("POLL_INTERVAL_SECONDS", 30))       # Instagram queue
 EMAIL_POLL_INTERVAL = int(os.getenv("EMAIL_POLL_INTERVAL_SECONDS", 120)) # Gmail IMAP
 
-# What to say if Ollama is unavailable — customise these in your .env file
+# What to say if Ollama is unavailable — customise these by exporting FALLBACK_INSTAGRAM and FALLBACK_EMAIL in your shell
 FALLBACK_REPLIES = {
     "instagram": os.getenv(
         "FALLBACK_INSTAGRAM",
@@ -219,9 +216,9 @@ def _generate_with_fallback(platform: str, content: str) -> str:
 
     This ensures a reply is ALWAYS sent — the sender never gets silence.
 
-    The fallback messages are set in your .env file:
-      FALLBACK_INSTAGRAM=Hey! Thanks for your comment...
-      FALLBACK_EMAIL=Thanks for reaching out...
+    The fallback messages are set as shell environment variables:
+      export FALLBACK_INSTAGRAM="Hey! Thanks for your comment..."
+      export FALLBACK_EMAIL="Thanks for reaching out..."
     """
     try:
         reply = generate_reply(platform, content)

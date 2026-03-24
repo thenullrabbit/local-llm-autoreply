@@ -15,6 +15,7 @@ Get one at: myaccount.google.com/apppasswords
 """
 
 import os
+import re
 import imaplib
 import smtplib
 import email
@@ -22,10 +23,6 @@ import logging
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.header import decode_header
-from dotenv import load_dotenv
-
-load_dotenv()
-
 log = logging.getLogger(__name__)
 
 IMAP_HOST     = os.getenv("IMAP_HOST", "imap.gmail.com")
@@ -35,6 +32,19 @@ SMTP_PORT     = int(os.getenv("SMTP_PORT", 587))
 SMTP_USER     = os.getenv("SMTP_USER")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD")  # Gmail App Password — NOT your real password
 YOUR_NAME     = os.getenv("YOUR_NAME", "thenullrabbit")
+
+# Basic email format check — rejects addresses missing @ or domain.
+# This prevents email header injection from malformed From/To values.
+_EMAIL_RE = re.compile(r"^[^\s@<>,;]+@[^\s@<>,;]+\.[^\s@<>,;]+$")
+
+# How much of an incoming email body we'll pass to Ollama.
+# Very long emails (newsletters, threads) are truncated before AI processing
+# to avoid hitting Ollama's context window and to keep replies snappy.
+_MAX_BODY_FETCH = 8000   # characters read from incoming email
+
+# How much of an AI-generated reply we'll actually send.
+# Replies should be concise — this prevents accidental novel-length responses.
+_MAX_BODY_SEND = 4000    # characters included in the outgoing reply
 
 
 # ── IMAP email fetching ───────────────────────────────────────────────────────
@@ -50,6 +60,10 @@ def fetch_new_emails() -> list[dict]:
     be fetched again on the next poll. This is the email equivalent of
     marking a Supabase row as processed.
 
+    Body length is capped at 8000 characters before being passed to Ollama.
+    This prevents very long emails (newsletters, long threads) from
+    overwhelming the AI model or causing slow responses.
+
     Prerequisites:
       - IMAP must be enabled in Gmail Settings → Forwarding and POP/IMAP
       - SMTP_PASSWORD must be a Gmail App Password (not your real password)
@@ -58,10 +72,10 @@ def fetch_new_emails() -> list[dict]:
       - uid:     Gmail's internal ID for the email
       - subject: the email subject line
       - sender:  the From address (who sent it)
-      - body:    the plain text content of the email
+      - body:    the plain text content of the email (truncated to 8000 chars)
     """
     if not SMTP_USER or not SMTP_PASSWORD:
-        log.error("❌ SMTP_USER or SMTP_PASSWORD not set in .env")
+        log.error("❌ SMTP_USER or SMTP_PASSWORD not set — export them in your shell (see .env.example for the list of required variables)")
         return []
 
     emails = []
@@ -124,6 +138,13 @@ def send_email_reply(recipient_email: str, message: str) -> bool:
     The reply appears in the recipient's inbox as coming from you,
     with the subject line 'Re: Your message'.
 
+    Security:
+      - recipient_email is validated against a basic regex before use.
+        This rejects obviously malformed addresses and addresses containing
+        control characters that could inject extra headers (header injection).
+      - YOUR_NAME is sanitised to remove newlines for the same reason.
+      - The reply body is truncated to 4000 characters.
+
     Returns True if the email was sent successfully, False otherwise.
 
     Note: Gmail requires an App Password for SMTP access.
@@ -131,17 +152,28 @@ def send_email_reply(recipient_email: str, message: str) -> bool:
     Get an App Password at: myaccount.google.com/apppasswords
     """
     if not SMTP_USER or not SMTP_PASSWORD:
-        log.error("❌ SMTP_USER or SMTP_PASSWORD not set in .env")
+        log.error("❌ SMTP_USER or SMTP_PASSWORD not set — export them in your shell (see .env.example for the list of required variables)")
         return False
+
+    # Validate the recipient address — reject malformed or injection-risk addresses.
+    recipient_email = recipient_email.strip()
+    if not _EMAIL_RE.match(recipient_email):
+        log.error(f"❌ Invalid recipient email address: {recipient_email!r} — skipping")
+        return False
+
+    # Strip newlines from YOUR_NAME to prevent email header injection.
+    # A name containing \r\n could split the From header and inject extra fields.
+    safe_name = YOUR_NAME.replace("\r", "").replace("\n", "").strip()
 
     try:
         # Build the email
         msg = MIMEMultipart("alternative")
         msg["Subject"] = "Re: Your message"
-        msg["From"]    = f"{YOUR_NAME} <{SMTP_USER}>"
+        msg["From"]    = f"{safe_name} <{SMTP_USER}>"
         msg["To"]      = recipient_email
 
-        msg.attach(MIMEText(message, "plain"))
+        # Truncate the reply to a reasonable length before sending
+        msg.attach(MIMEText(message[:_MAX_BODY_SEND], "plain"))
 
         # Connect to Gmail and send
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
@@ -174,19 +206,27 @@ def _extract_body(msg) -> str:
     Emails can contain plain text, HTML, or both. We only want the
     plain text version to keep things simple and avoid sending HTML
     content to Ollama. If no plain text part is found, returns empty string.
+
+    The result is truncated to 8000 characters. Very long emails
+    (newsletters, forwarded threads, etc.) are cut off here so that
+    Ollama gets a focused, manageable input rather than pages of text.
     """
+    body = ""
+
     if msg.is_multipart():
         # Email has multiple parts (e.g. plain text + HTML version)
         for part in msg.walk():
             if part.get_content_type() == "text/plain":
                 charset = part.get_content_charset() or "utf-8"
-                return part.get_payload(decode=True).decode(charset, errors="replace")
+                body = part.get_payload(decode=True).decode(charset, errors="replace")
+                break
     else:
         # Simple single-part email
         if msg.get_content_type() == "text/plain":
             charset = msg.get_content_charset() or "utf-8"
-            return msg.get_payload(decode=True).decode(charset, errors="replace")
-    return ""
+            body = msg.get_payload(decode=True).decode(charset, errors="replace")
+
+    return body[:_MAX_BODY_FETCH]
 
 
 def _decode_header_value(value: str) -> str:
@@ -194,7 +234,7 @@ def _decode_header_value(value: str) -> str:
     Decodes email header values that may contain special characters or
     non-English text (e.g. Japanese subject lines, accented characters).
 
-    Email headers are sometimes encoded in formats like '=?UTF-8?B?...'
+    Email headers are sometimes encoded in formats like '=?UTF-8?B?...'.
     This function converts them back to readable text.
     """
     decoded_parts = decode_header(value)

@@ -15,6 +15,8 @@ Before using this, make sure Ollama is running:
   ollama pull llama3
 """
 
+from __future__ import annotations
+
 import os
 import logging
 import requests
@@ -29,15 +31,27 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "llama3")
 # Folder containing the instruction files for each platform
 PROMPTS_DIR = Path(__file__).parent.parent / "prompts"
 
+# Only these platforms have prompt files and are safe to process.
+# This also prevents path traversal: if the platform value ever came
+# from untrusted input like "../../etc/passwd", this check stops it.
+_ALLOWED_PLATFORMS = {"instagram", "email"}
+
+# How much content we'll send to Ollama per request.
+# Very long emails or comment threads are truncated here to avoid
+# overloading Ollama's context window and to keep responses fast.
+_MAX_CONTENT_LEN = 4000  # characters
+
 
 def generate_reply(platform: str, content: str) -> str | None:
     """
     Sends a comment or email to Ollama and gets a generated reply back.
 
     How it works:
-      1. Loads the instruction file for the platform (e.g. prompts/instagram.txt)
-      2. Sends those instructions + the incoming content to Ollama
-      3. Returns whatever Ollama writes back as the reply
+      1. Validates the platform against a known-good allowlist
+      2. Truncates the content to a safe length before sending to Ollama
+      3. Loads the instruction file for the platform (e.g. prompts/instagram.txt)
+      4. Sends those instructions + the incoming content to Ollama
+      5. Returns whatever Ollama writes back as the reply
 
     The 'system prompt' (instructions file) tells Ollama things like:
       - Who you are (thenullrabbit, a developer)
@@ -47,6 +61,14 @@ def generate_reply(platform: str, content: str) -> str | None:
     Returns None if Ollama is unreachable or something goes wrong —
     the worker will use a fallback reply in that case.
     """
+    if platform not in _ALLOWED_PLATFORMS:
+        log.error(f"❌ Unknown platform: {platform!r} — must be one of {_ALLOWED_PLATFORMS}")
+        return None
+
+    # Truncate before sending — keeps Ollama's context window manageable
+    # and prevents very long emails from producing unexpectedly long replies.
+    content = content[:_MAX_CONTENT_LEN]
+
     system_prompt = _load_prompt(platform)
     if not system_prompt:
         log.error(f"❌ No instruction file found for platform: {platform}")
@@ -128,9 +150,18 @@ def _load_prompt(platform: str) -> str | None:
       prompts/instagram.txt — instructions for replying to Instagram comments
       prompts/email.txt     — instructions for replying to emails
 
+    The platform value is validated against an allowlist before being used
+    to construct the file path — this prevents path traversal attacks where
+    a crafted platform string like '../../etc/passwd' could read other files.
+
     You can edit these files at any time to change how the AI responds.
     No code changes needed — just edit the text file and restart the worker.
     """
+    # Second check — belt and suspenders in case _load_prompt is called directly
+    if platform not in _ALLOWED_PLATFORMS:
+        log.error(f"❌ Unknown platform: {platform!r}")
+        return None
+
     prompt_file = PROMPTS_DIR / f"{platform}.txt"
 
     if not prompt_file.exists():

@@ -168,6 +168,9 @@ railway login --browserless
 # or just press Enter to accept the randomly generated name
 railway init
 
+# Link your Railway service first (required if the project has multiple services)
+railway service local-llm-autoreply
+
 # Set environment variables BEFORE deploying — the app crashes on startup without them
 # Replace the values with your real credentials from the earlier steps
 #
@@ -175,10 +178,8 @@ railway init
 #   SUPABASE_URL         → Supabase dashboard → Settings → API Keys → Project URL
 #   SUPABASE_SERVICE_KEY → Supabase dashboard → Settings → API Keys → Legacy tab → service_role key (starts with eyJ...)
 #   VERIFY_TOKEN         → make up any string (e.g. mynullrabbittoken) — you'll enter this same string in Meta Developer later
-#   META_APP_SECRET      → Meta Developer dashboard → your app → App Settings → Basic → App Secret (set this later)
-#
-# Alternatively, set variables via the Railway web dashboard:
-#   railway.app → your project → click the service → Variables tab → + New Variable
+#   META_APP_SECRET      → Meta Developer dashboard → your app → Instagram → API setup with Instagram Business Login
+#                          → click "Show" next to "Instagram app secret"
 railway variables set \
   SUPABASE_URL=https://your-project.supabase.co \
   SUPABASE_SERVICE_KEY=your-service-role-key \
@@ -189,6 +190,10 @@ railway variables set \
 # This uploads your code and starts the Flask server
 # Railway already has the env vars so it will boot cleanly
 railway up
+
+# ⚠️ If you set env vars AFTER the initial deploy (via dashboard or CLI),
+# Railway does not always auto-restart. Force a redeploy to pick them up:
+# railway redeploy --service local-llm-autoreply --yes
 ```
 
 **How `railway up` knows what to run:**
@@ -247,33 +252,31 @@ your server every 5 minutes to keep it permanently awake — for free.
 
 ### 6. Configure credentials
 
-```bash
-cp .env.example .env
-```
-
-Fill in the non-sensitive values directly in `.env` (Supabase URL, model name, your name, etc.).
-
-**For sensitive credentials (Gmail App Password, tokens), use shell environment variables
-instead of writing them in any file.** Add these to your `~/.zshrc`:
+All credentials are set as shell environment variables — add these to your `~/.zshrc`:
 
 ```bash
+# Supabase
+export SUPABASE_URL="https://your-project.supabase.co"
+export SUPABASE_SERVICE_KEY="eyJ..."
+
+# Instagram
+export INSTAGRAM_ACCESS_TOKEN="..."
+export INSTAGRAM_USER_ID="your-numeric-id"
+export META_APP_SECRET="..."
+export VERIFY_TOKEN="your-chosen-token"   # same string as set on Railway
+
+# Email (Gmail)
 export SMTP_USER="your@gmail.com"
 export SMTP_PASSWORD="your-gmail-app-password"   # App Password from myaccount.google.com/apppasswords
-export SUPABASE_SERVICE_KEY="eyJ..."
-export INSTAGRAM_ACCESS_TOKEN="..."
 ```
 
-Then apply it:
+Then apply:
 ```bash
 source ~/.zshrc
 ```
 
-`os.getenv()` reads shell environment variables with the same priority as `.env` — the worker
-will pick them up automatically. Shell exports live in your home directory and are never
-part of the project, so there's no risk of accidentally committing them.
-
-The `.env` file is already in `.gitignore` so it won't be pushed to GitHub either way,
-but keeping secrets in `~/.zshrc` is the cleaner approach.
+The worker reads all credentials exclusively from shell environment variables — there is no `.env` loading.
+A `.env.example` file exists in the project as a reference for what variables are required, but it is never read by the code.
 
 **Where to get each credential:**
 
@@ -285,8 +288,15 @@ but keeping secrets in `~/.zshrc` is the cleaner approach.
 
 ### 7. Run pre-flight checks
 ```bash
+source ~/.zshrc
 python tests/test_all.py
 ```
+
+A healthy system looks like this — all six checks green before you start the worker:
+
+![Pre-flight checks all passing](assets/preflight-all-green.png)
+
+If any check fails, the output tells you exactly what to fix and where to look.
 
 ### 8. Start the worker
 ```bash
@@ -324,12 +334,27 @@ Detailed step-by-step setup for each platform:
 ## Testing
 
 ```bash
-# Check all components are configured correctly
+# Check all components are configured correctly (run this first)
+source ~/.zshrc
 python tests/test_all.py
+```
 
-# Test the full pipeline end to end (worker must be running)
+![Pre-flight checks all passing](assets/preflight-all-green.png)
+
+```bash
+# Test the full pipeline end to end (worker must be running in another terminal)
 python tests/test_e2e.py
 ```
+
+**What each check tests:**
+- **Ollama** — model is downloaded and responding
+- **Supabase** — connection works and the `queue` table exists
+- **Instagram token** — long-lived token is valid and not expired
+- **Gmail IMAP** — can connect to fetch incoming emails
+- **Gmail SMTP** — can connect to send reply emails
+- **Prompt files** — `prompts/instagram.txt` and `prompts/email.txt` exist
+
+Fix any red crosses before starting the worker. The output tells you exactly what's wrong.
 
 ---
 

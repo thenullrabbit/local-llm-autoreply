@@ -10,17 +10,14 @@ delivers the DM to the person who left a comment.
 Requirements:
   - INSTAGRAM_ACCESS_TOKEN: a long-lived token from Meta Developer dashboard
   - INSTAGRAM_USER_ID: your Instagram account's numeric ID
-  Both are set in your .env file.
+  Both are set as shell environment variables (see ~/.zshrc).
 """
 
 import os
+import re
 import time
 import logging
 import requests
-from dotenv import load_dotenv
-
-load_dotenv()
-
 log = logging.getLogger(__name__)
 
 ACCESS_TOKEN = os.getenv("INSTAGRAM_ACCESS_TOKEN")
@@ -30,6 +27,13 @@ IG_USER_ID   = os.getenv("INSTAGRAM_USER_ID")
 # At 1.5 seconds per DM, we can send a maximum of 40 DMs per minute — well within limits.
 DM_DELAY = 1.5
 
+# Instagram DMs are capped at 2000 characters by the API.
+# Truncate generated replies to avoid a 400 error from Meta.
+_MAX_DM_LENGTH = 2000
+
+# Instagram user IDs are always numeric — validate before making the API call.
+_RECIPIENT_ID_RE = re.compile(r"^\d{1,30}$")
+
 
 def send_instagram_dm(recipient_id: str, message: str) -> bool:
     """
@@ -37,6 +41,10 @@ def send_instagram_dm(recipient_id: str, message: str) -> bool:
 
     Uses Meta's Graph API — the official, approved way to send DMs
     programmatically. This is the same API used by tools like LinkDM.
+
+    Input validation:
+      - recipient_id must be a numeric string (real Instagram user IDs always are)
+      - message is truncated to Instagram's 2000-character DM limit before sending
 
     Important constraints:
       - You can only DM someone who commented on your post in the last 24 hours
@@ -47,8 +55,19 @@ def send_instagram_dm(recipient_id: str, message: str) -> bool:
     The worker logs a detailed error message if it returns False.
     """
     if not ACCESS_TOKEN or not IG_USER_ID:
-        log.error("❌ INSTAGRAM_ACCESS_TOKEN or INSTAGRAM_USER_ID not set in .env")
+        log.error("❌ INSTAGRAM_ACCESS_TOKEN or INSTAGRAM_USER_ID not set — export them in your shell (see .env.example for the full list)")
         return False
+
+    # Validate that recipient_id looks like a real Instagram user ID.
+    # This guards against garbage data in the Supabase queue.
+    recipient_id = str(recipient_id).strip()
+    if not _RECIPIENT_ID_RE.match(recipient_id):
+        log.error(f"❌ Invalid recipient_id format: {recipient_id!r} — must be numeric")
+        return False
+
+    # Truncate to Instagram's DM character limit.
+    # Ollama can occasionally generate longer responses.
+    message = message[:_MAX_DM_LENGTH]
 
     url = f"https://graph.facebook.com/v25.0/{IG_USER_ID}/messages"
 
