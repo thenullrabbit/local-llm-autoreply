@@ -27,10 +27,19 @@ app = Flask(__name__)
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger(__name__)
 
-supabase = create_client(
-    os.getenv("SUPABASE_URL"),
-    os.getenv("SUPABASE_SERVICE_KEY")
-)
+# Supabase client is created lazily on first use so the app can start
+# even if Railway hasn't injected env vars yet at import time.
+_supabase = None
+
+def get_supabase():
+    global _supabase
+    if _supabase is None:
+        url = os.getenv("SUPABASE_URL")
+        key = os.getenv("SUPABASE_SERVICE_KEY")
+        if not url or not key:
+            raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_KEY must be set")
+        _supabase = create_client(url, key)
+    return _supabase
 
 VERIFY_TOKEN = os.getenv("VERIFY_TOKEN")
 APP_SECRET   = os.getenv("META_APP_SECRET")
@@ -158,7 +167,7 @@ def _queue_event(platform: str, sender_id: str, content: str):
       - processed: false — meaning it hasn't been replied to yet
     """
     try:
-        supabase.table("queue").insert({
+        get_supabase().table("queue").insert({
             "platform":  platform,
             "sender_id": sender_id,
             "content":   content,

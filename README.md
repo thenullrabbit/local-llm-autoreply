@@ -142,26 +142,146 @@ pip install -r requirements.txt
 
 ### 3. Set up Supabase
 1. Create a free project at [supabase.com](https://supabase.com)
-2. Go to SQL Editor → New Query → paste `supabase_schema.sql` → Run
-3. Copy your Project URL and service_role key from Settings → API
+2. Enable the pg_cron extension: **Database → Extensions → search "pg_cron" → toggle on**
+3. Go to **SQL Editor → New Query** → paste `supabase_schema.sql` → **Run**
+4. Copy your Project URL and service_role key from **Settings → API**
+
+> **Note:** The "Connect to your project" dialog is for application code — ignore it here.
+> You only need the SQL Editor for this step. The Project URL and service_role key come
+> from Settings → API, not from the Connect dialog.
 
 ### 4. Deploy webhook catcher to Railway
+
+Railway hosts the tiny Flask server that receives Instagram comment notifications.
+It's the only piece that needs to be always online (your local machine can be off).
+
 ```bash
+# Install the Railway CLI
 npm install -g @railway/cli
-railway login
+
+# Log in — use --browserless if you're in a terminal without a browser
+# It prints a URL and a pairing code; open the URL in any browser to confirm
+railway login --browserless
+
+# Create a new Railway project in this folder
+# When prompted for a Project Name: type something like "local-llm-autoreply"
+# or just press Enter to accept the randomly generated name
 railway init
+
+# Set environment variables BEFORE deploying — the app crashes on startup without them
+# Replace the values with your real credentials from the earlier steps
+#
+# Where to find each value:
+#   SUPABASE_URL         → Supabase dashboard → Settings → API Keys → Project URL
+#   SUPABASE_SERVICE_KEY → Supabase dashboard → Settings → API Keys → Legacy tab → service_role key (starts with eyJ...)
+#   VERIFY_TOKEN         → make up any string (e.g. mynullrabbittoken) — you'll enter this same string in Meta Developer later
+#   META_APP_SECRET      → Meta Developer dashboard → your app → App Settings → Basic → App Secret (set this later)
+#
+# Alternatively, set variables via the Railway web dashboard:
+#   railway.app → your project → click the service → Variables tab → + New Variable
+railway variables set \
+  SUPABASE_URL=https://your-project.supabase.co \
+  SUPABASE_SERVICE_KEY=your-service-role-key \
+  VERIFY_TOKEN=your-chosen-token \
+  META_APP_SECRET=your-meta-app-secret
+
+# Deploy the webhook_catcher/app.py to Railway
+# This uploads your code and starts the Flask server
+# Railway already has the env vars so it will boot cleanly
 railway up
-railway variables set SUPABASE_URL=... SUPABASE_SERVICE_KEY=... VERIFY_TOKEN=... META_APP_SECRET=...
 ```
+
+**How `railway up` knows what to run:**
+`railway up` uploads the entire project folder. Railway then reads the `Procfile`
+at the project root to find the start command:
+
+```
+web: gunicorn webhook_catcher.app:app --bind 0.0.0.0:$PORT
+```
+
+- `webhook_catcher.app` = the `webhook_catcher/` folder → `app.py` file
+- `:app` = the Flask object named `app` inside that file
+- `$PORT` = automatically assigned by Railway
+- `worker/worker.py` is intentionally absent — it runs on your local machine only, not Railway
+
+After `railway up` finishes, Railway auto-generates a public domain. Retrieve it with:
+
+```bash
+railway domain
+# → 🚀 https://local-llm-autoreply-production.up.railway.app
+```
+
+You can also find it in the Railway dashboard:
+**service → Settings tab → Networking section → Public Networking**
+(the domain is already generated — no button to click, just copy it from there)
+
+Save this URL — you'll need it in the next two steps:
+
+| Purpose | URL |
+|---|---|
+| UptimeRobot keep-warm monitor | `https://your-url.railway.app/ping` |
+| Meta webhook registration | `https://your-url.railway.app/webhook/instagram` |
+
+**Verify your server is working** by opening both URLs in a browser:
+- `/ping` → should return `{"message":"pong","status":"ok"}` ✅
+- `/webhook/instagram` → should return `Forbidden` ✅ (correct — it rejects browser visits,
+  it only accepts signed POST requests from Meta. This is not an error.)
 
 ### 5. Set up UptimeRobot
-Add a free HTTP monitor pointing to `https://your-railway-url.railway.app/ping` with a 5-minute interval.
+
+**Why this is needed:** Railway's free tier shuts your server down after ~10 minutes of no
+traffic. When Instagram sends a comment event to a sleeping server, Railway has to wake it
+up first (cold-start delay), and Instagram may give up before it responds. UptimeRobot pings
+your server every 5 minutes to keep it permanently awake — for free.
+
+1. Create a free account at [uptimerobot.com](https://uptimerobot.com)
+2. Click **Add New Monitor** and fill in:
+   - Monitor Type: **HTTP(s)**
+   - Friendly Name: `local-llm-autoreply`
+   - URL: your Railway URL from the previous step + `/ping`
+     e.g. `https://local-llm-autoreply-production.up.railway.app/ping`
+   - Monitoring Interval: **5 minutes**
+3. Click **Create Monitor**
+
+> If you upgrade Railway to a paid plan, you can skip this step — paid plans don't sleep.
 
 ### 6. Configure credentials
+
 ```bash
 cp .env.example .env
-# Fill in all values in .env
 ```
+
+Fill in the non-sensitive values directly in `.env` (Supabase URL, model name, your name, etc.).
+
+**For sensitive credentials (Gmail App Password, tokens), use shell environment variables
+instead of writing them in any file.** Add these to your `~/.zshrc`:
+
+```bash
+export SMTP_USER="your@gmail.com"
+export SMTP_PASSWORD="your-gmail-app-password"   # App Password from myaccount.google.com/apppasswords
+export SUPABASE_SERVICE_KEY="eyJ..."
+export INSTAGRAM_ACCESS_TOKEN="..."
+```
+
+Then apply it:
+```bash
+source ~/.zshrc
+```
+
+`os.getenv()` reads shell environment variables with the same priority as `.env` — the worker
+will pick them up automatically. Shell exports live in your home directory and are never
+part of the project, so there's no risk of accidentally committing them.
+
+The `.env` file is already in `.gitignore` so it won't be pushed to GitHub either way,
+but keeping secrets in `~/.zshrc` is the cleaner approach.
+
+**Where to get each credential:**
+
+| Credential | Guide |
+|---|---|
+| `INSTAGRAM_ACCESS_TOKEN`, `INSTAGRAM_USER_ID`, `META_APP_SECRET` | → [platforms/instagram.md](platforms/instagram.md) |
+| `SMTP_PASSWORD` (Gmail App Password) | → [platforms/email.md](platforms/email.md) |
+| `SUPABASE_URL`, `SUPABASE_SERVICE_KEY` | → Supabase dashboard → Settings → API Keys |
 
 ### 7. Run pre-flight checks
 ```bash
